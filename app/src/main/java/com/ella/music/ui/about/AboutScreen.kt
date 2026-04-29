@@ -263,11 +263,11 @@ private fun AboutContent(
             }
 
             item {
-                SmallTitle(text = "致谢")
+                SmallTitle(text = "项目")
                 FrostedCard(backdrop = backdrop, blurEnable = blurEnable, cardBlendColors = cardBlendColors) {
                     BasicComponent(
-                        title = "Mimo-V2.5-Pro",
-                        summary = "主要开发",
+                        title = "Ella Music",
+                        summary = "github.com/Kifranei/Ella",
                         onClick = { uriHandler.openUri("https://github.com/Kifranei/Ella") },
                     )
                     BasicComponent(
@@ -301,18 +301,6 @@ private fun AboutContent(
                         onClick = { uriHandler.openUri("https://github.com/coil-kt/coil") },
                     )
                 }
-            }
-
-            item {
-                Text(
-                    text = "© 2026 Ella Music. All rights reserved.",
-                    fontSize = 12.sp,
-                    color = colorScheme.onSurfaceVariantSummary.copy(alpha = 0.6f),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 16.dp),
-                )
             }
 
             item {
