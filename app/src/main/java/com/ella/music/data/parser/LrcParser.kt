@@ -1,8 +1,10 @@
 package com.ella.music.data.parser
 
+import android.os.ParcelFileDescriptor
 import com.ella.music.data.model.LyricLine
 import com.ella.music.data.model.LyricWord
 import java.io.File
+import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
@@ -124,22 +126,40 @@ object LrcParser {
         val baseName = songPath.substringBeforeLast('.')
         val candidates = listOf("$baseName.lrc", "${baseName}.LRC")
         for (candidate in candidates) {
-            val file = File(candidate)
-            if (file.exists()) return readTextWithFallback(file)
+            readViaFd(candidate)?.let { return it }
         }
 
-        val parentDir = File(songPath).parentFile ?: return null
-        val songName = File(songPath).nameWithoutExtension
-        parentDir.listFiles()?.find {
-            it.extension.equals("lrc", ignoreCase = true) &&
-                it.nameWithoutExtension.contains(songName, ignoreCase = true)
-        }?.let { return readTextWithFallback(it) }
+        val parentDir = File(songPath).parentFile
+        if (parentDir != null) {
+            val songName = File(songPath).nameWithoutExtension
+            try {
+                parentDir.listFiles()?.find {
+                    it.extension.equals("lrc", ignoreCase = true) &&
+                        it.nameWithoutExtension.contains(songName, ignoreCase = true)
+                }?.let { readViaFd(it.absolutePath)?.let { text -> return text } }
+            } catch (_: Exception) {}
+        }
 
         return null
     }
 
-    private fun readTextWithFallback(file: File): String {
-        val bytes = file.readBytes()
+    private fun readViaFd(path: String): String? {
+        return try {
+            val file = File(path)
+            if (!file.exists()) return null
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                FileInputStream(pfd.fileDescriptor).use { fis ->
+                    val bytes = fis.readBytes()
+                    if (bytes.isEmpty()) return null
+                    readTextWithFallback(bytes)
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readTextWithFallback(bytes: ByteArray): String {
         val charsets = listOf("UTF-8", "GB18030", "UTF-16LE", "UTF-16BE")
         for (charsetName in charsets) {
             val charset = Charset.forName(charsetName)

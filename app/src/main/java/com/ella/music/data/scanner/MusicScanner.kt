@@ -72,15 +72,20 @@ class MusicScanner(private val context: Context) {
 
                 if (needsTagLib) {
                     try {
-                        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-                            val audioProps = TagLib.getAudioProperties(fd.dup().detachFd())
-                            val metadata = TagLib.getMetadata(fd.dup().detachFd(), false)
-                            val props = metadata?.propertyMap
+                        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                            val fd = pfd.detachFd()
+                            try {
+                                val audioProps = TagLib.getAudioProperties(fd)
+                                val metadata = TagLib.getMetadata(fd, false)
+                                val props = metadata?.propertyMap
 
-                            if (isMissingTag(title, fileName)) title = props.firstValue("TITLE", "INAM", "NAME", "TIT2")
-                            if (isMissingTag(artist)) artist = props.firstValue("ARTIST", "ALBUMARTIST", "IART", "PERFORMER", "TPE1")
-                            if (isMissingTag(album)) album = props.firstValue("ALBUM", "IPRD", "TALB")
-                            if (duration <= 0) duration = ((audioProps?.length ?: 0) * 1000L)
+                                if (isMissingTag(title, fileName)) title = props.firstValue("TITLE", "INAM", "NAME", "TIT2")
+                                if (isMissingTag(artist)) artist = props.firstValue("ARTIST", "ALBUMARTIST", "IART", "PERFORMER", "TPE1")
+                                if (isMissingTag(album)) album = props.firstValue("ALBUM", "IPRD", "TALB")
+                                if (duration <= 0) duration = ((audioProps?.length ?: 0) * 1000L)
+                            } finally {
+                                try { ParcelFileDescriptor.adoptFd(fd).close() } catch (_: Exception) {}
+                            }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "TagLib failed for $path", e)
@@ -136,20 +141,19 @@ class MusicScanner(private val context: Context) {
         return try {
             val file = File(path)
             if (!file.exists()) return null
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-                val lyrics = firstMetadataValue(
-                    fd = fd,
-                    "LYRICS",
-                    "UNSYNCEDLYRICS",
-                    "UNSYNCED LYRICS",
-                    "SYNCEDLYRICS",
-                    "USLT",
-                    "SYLT",
-                    "©lyr",
-                    "\u00a9lyr",
-                    "LYRIC"
-                )
-                lyrics?.ifBlank { null }
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                val fd = pfd.detachFd()
+                try {
+                    val lyrics = firstMetadataValue(
+                        fd,
+                        "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS",
+                        "SYNCEDLYRICS", "USLT", "SYLT",
+                        "©lyr", "\u00a9lyr", "LYRIC"
+                    )
+                    lyrics?.ifBlank { null }
+                } finally {
+                    try { ParcelFileDescriptor.adoptFd(fd).close() } catch (_: Exception) {}
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "TagLib lyrics extraction failed for $path", e)
@@ -161,12 +165,17 @@ class MusicScanner(private val context: Context) {
         return try {
             val file = File(path)
             if (!file.exists()) return null
-            val gainStr = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-                firstMetadataValue(fd, "REPLAYGAIN_TRACK_GAIN", "R128_TRACK_GAIN")
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                val fd = pfd.detachFd()
+                try {
+                    val gainStr = firstMetadataValue(fd, "REPLAYGAIN_TRACK_GAIN", "R128_TRACK_GAIN")
+                    if (!gainStr.isNullOrBlank()) {
+                        Regex("([+-]?[0-9.]+)").find(gainStr)?.groupValues?.get(1)?.toFloatOrNull()
+                    } else null
+                } finally {
+                    try { ParcelFileDescriptor.adoptFd(fd).close() } catch (_: Exception) {}
+                }
             }
-            if (!gainStr.isNullOrBlank()) {
-                Regex("([+-]?[0-9.]+)").find(gainStr)?.groupValues?.get(1)?.toFloatOrNull()
-            } else null
         } catch (e: Exception) {
             Log.w(TAG, "TagLib ReplayGain extraction failed for $path", e)
             null
@@ -177,10 +186,15 @@ class MusicScanner(private val context: Context) {
         return try {
             val file = File(path)
             if (!file.exists()) return null
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-                val pictures = TagLib.getPictures(fd.dup().detachFd())
-                val frontCover = pictures.firstOrNull { it.pictureType == "Front Cover" } ?: pictures.firstOrNull()
-                frontCover?.data
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                val fd = pfd.detachFd()
+                try {
+                    val pictures = TagLib.getPictures(fd)
+                    val frontCover = pictures.firstOrNull { it.pictureType == "Front Cover" } ?: pictures.firstOrNull()
+                    frontCover?.data
+                } finally {
+                    try { ParcelFileDescriptor.adoptFd(fd).close() } catch (_: Exception) {}
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "TagLib cover art extraction failed for $path", e)
@@ -229,21 +243,27 @@ class MusicScanner(private val context: Context) {
         return ""
     }
 
-    private fun firstMetadataValue(fd: ParcelFileDescriptor, vararg keys: String): String? {
+    private fun firstMetadataValue(fd: Int, vararg keys: String): String? {
         for (key in keys) {
-            val value = TagLib.getMetadataPropertyValues(fd.dup().detachFd(), key)
-                ?.firstOrNull()
-                ?.trim()
-            if (!value.isNullOrBlank()) return value
+            val values = TagLib.getMetadataPropertyValues(fd, key)
+            val value = values?.firstOrNull()?.trim()
+            if (!value.isNullOrBlank()) {
+                Log.d(TAG, "Found metadata key=$key value=${value.take(80)}")
+                return value
+            }
         }
-        val propertyMap = TagLib.getMetadata(fd.dup().detachFd(), false)?.propertyMap
+        val propertyMap = TagLib.getMetadata(fd, false)?.propertyMap
         val normalizedKeys = keys.map { it.lowercase().replace(" ", "") }.toSet()
         propertyMap?.forEach { (propertyKey, values) ->
             if (propertyKey.lowercase().replace(" ", "") in normalizedKeys) {
                 val value = values.firstOrNull()?.trim()
-                if (!value.isNullOrBlank()) return value
+                if (!value.isNullOrBlank()) {
+                    Log.d(TAG, "Found metadata via propertyMap key=$propertyKey value=${value.take(80)}")
+                    return value
+                }
             }
         }
+        Log.d(TAG, "No metadata found for keys: ${keys.joinToString()}")
         return null
     }
 }
