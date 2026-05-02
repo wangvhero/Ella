@@ -68,36 +68,24 @@ class MusicScanner(private val context: Context) {
                 val file = File(path)
                 if (!file.exists()) continue
 
-                val needsTagLib = shouldReadTagsWithTagLib(file, title, artist, album, duration)
+                val needsRetriever = isMissingTag(title, file.name) || isMissingTag(artist) ||
+                    isMissingTag(album) || duration <= 0
 
-                if (needsTagLib) {
+                if (needsRetriever) {
                     try {
-                        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                            val fd = pfd.fd
-                            val audioProps = TagLib.getAudioProperties(fd)
-                            val metadata = TagLib.getMetadata(fd, false)
-                            val props = metadata?.propertyMap
-
-                            if (isMissingTag(title, fileName)) title = props.firstValue("TITLE", "INAM", "NAME", "TIT2")
-                            if (isMissingTag(artist)) artist = props.firstValue("ARTIST", "ALBUMARTIST", "IART", "PERFORMER", "TPE1")
-                            if (isMissingTag(album)) album = props.firstValue("ALBUM", "IPRD", "TALB")
-                            if (duration <= 0) duration = ((audioProps?.length ?: 0) * 1000L)
-                        }
+                        val retriever = MediaMetadataRetriever()
+                        retriever.setDataSource(path)
+                        if (isMissingTag(title, file.name)) title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE) ?: ""
+                        if (isMissingTag(artist)) artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST) ?: ""
+                        if (isMissingTag(album)) album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: ""
+                        if (duration <= 0) duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                        retriever.release()
                     } catch (e: Exception) {
-                        Log.w(TAG, "TagLib failed for $path", e)
-                        try {
-                            val retriever = MediaMetadataRetriever()
-                            retriever.setDataSource(path)
-                            if (isMissingTag(title, fileName)) title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE) ?: ""
-                            if (isMissingTag(artist)) artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST) ?: ""
-                            if (isMissingTag(album)) album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: ""
-                            if (duration <= 0) duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                            retriever.release()
-                        } catch (_: Exception) {}
+                        Log.w(TAG, "MediaMetadataRetriever failed for $path", e)
                     }
                 }
 
-                if (isMissingTag(title, fileName)) title = fileName.substringBeforeLast('.')
+                if (isMissingTag(title, file.name)) title = fileName.substringBeforeLast('.')
                 if (isMissingTag(artist)) artist = "Unknown"
                 if (isMissingTag(album)) album = "Unknown"
 
@@ -134,72 +122,40 @@ class MusicScanner(private val context: Context) {
     }
 
     fun extractEmbeddedLyrics(path: String): String? {
-        return try {
-            val file = File(path)
-            if (!file.exists()) return null
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                val fd = pfd.fd
-                val lyrics = firstMetadataValue(
-                    fd,
-                    "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS",
-                    "SYNCEDLYRICS", "USLT", "SYLT",
-                    "©lyr", "\u00a9lyr", "LYRIC"
-                )
-                lyrics?.ifBlank { null }
+        try {
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(path)
+            val lyrics = retriever.extractMetadata(1000)
+            retriever.release()
+            if (!lyrics.isNullOrBlank()) {
+                Log.d(TAG, "Found embedded lyrics via MediaMetadataRetriever (${lyrics.length} chars) for $path")
+                return lyrics
             }
         } catch (e: Exception) {
-            Log.w(TAG, "TagLib lyrics extraction failed for $path", e)
-            null
+            Log.w(TAG, "MediaMetadataRetriever lyrics failed for $path", e)
         }
+        return null
     }
 
     fun extractReplayGain(path: String): Float? {
-        return try {
-            val file = File(path)
-            if (!file.exists()) return null
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                val fd = pfd.fd
-                val gainStr = firstMetadataValue(fd, "REPLAYGAIN_TRACK_GAIN", "R128_TRACK_GAIN")
-                if (!gainStr.isNullOrBlank()) {
-                    Regex("([+-]?[0-9.]+)").find(gainStr)?.groupValues?.get(1)?.toFloatOrNull()
-                } else null
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "TagLib ReplayGain extraction failed for $path", e)
-            null
-        }
+        return null
     }
 
     fun extractCoverArt(path: String): ByteArray? {
         return try {
-            val file = File(path)
-            if (!file.exists()) return null
-            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                val fd = pfd.fd
-                val pictures = TagLib.getPictures(fd)
-                val frontCover = pictures.firstOrNull { it.pictureType == "Front Cover" } ?: pictures.firstOrNull()
-                frontCover?.data
-            }
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(path)
+            val art = retriever.embeddedPicture
+            retriever.release()
+            art
         } catch (e: Exception) {
-            Log.w(TAG, "TagLib cover art extraction failed for $path", e)
+            Log.w(TAG, "Cover art extraction failed for $path", e)
             null
         }
     }
 
     fun getAlbumArtUri(albumId: Long): Uri =
         ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
-
-    private fun shouldReadTagsWithTagLib(
-        file: File,
-        title: String,
-        artist: String,
-        album: String,
-        duration: Long
-    ): Boolean {
-        val extension = file.extension.lowercase()
-        val preferTagLib = extension in setOf("wav", "wave", "aif", "aiff", "flac", "ogg", "opus")
-        return preferTagLib || isMissingTag(title, file.name) || isMissingTag(artist) || isMissingTag(album) || duration <= 0
-    }
 
     private fun isMissingTag(value: String?, fileName: String? = null): Boolean {
         val normalized = value?.trim().orEmpty()
@@ -209,44 +165,5 @@ class MusicScanner(private val context: Context) {
         if (normalized.equals("unknown artist", ignoreCase = true)) return true
         if (normalized.equals("unknown album", ignoreCase = true)) return true
         return fileName != null && normalized == fileName.substringBeforeLast('.')
-    }
-
-    private fun Map<String, Array<String>>?.firstValue(vararg keys: String): String {
-        if (this == null) return ""
-        for (key in keys) {
-            val value = get(key)?.firstOrNull()?.trim()
-            if (!value.isNullOrBlank()) return value
-        }
-        val normalizedKeys = keys.map { it.lowercase().replace(" ", "") }.toSet()
-        for ((propertyKey, values) in this) {
-            if (propertyKey.lowercase().replace(" ", "") in normalizedKeys) {
-                val value = values.firstOrNull()?.trim()
-                if (!value.isNullOrBlank()) return value
-            }
-        }
-        return ""
-    }
-
-    private fun firstMetadataValue(fd: Int, vararg keys: String): String? {
-        for (key in keys) {
-            val values = TagLib.getMetadataPropertyValues(fd, key)
-            val value = values?.firstOrNull()?.trim()
-            if (!value.isNullOrBlank()) {
-                Log.d(TAG, "Found metadata key=$key value=${value.take(80)}")
-                return value
-            }
-        }
-        val propertyMap = TagLib.getMetadata(fd, false)?.propertyMap
-        val normalizedKeys = keys.map { it.lowercase().replace(" ", "") }.toSet()
-        propertyMap?.forEach { (propertyKey, values) ->
-            if (propertyKey.lowercase().replace(" ", "") in normalizedKeys) {
-                val value = values.firstOrNull()?.trim()
-                if (!value.isNullOrBlank()) {
-                    Log.d(TAG, "Found metadata via propertyMap key=$propertyKey value=${value.take(80)}")
-                    return value
-                }
-            }
-        }
-        return null
     }
 }
