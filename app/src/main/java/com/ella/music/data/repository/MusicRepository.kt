@@ -92,10 +92,7 @@ class MusicRepository(private val context: Context) {
     }
 
     fun getReplayGain(song: Song): Float? {
-        replayGainCache[song.id]?.let { return it }
-        val gain = scanner.extractReplayGain(song.path)
-        replayGainCache[song.id] = gain
-        return gain
+        return null
     }
 
     fun getCoverArt(song: Song): ByteArray? {

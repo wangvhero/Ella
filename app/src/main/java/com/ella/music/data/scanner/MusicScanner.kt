@@ -4,12 +4,10 @@ import android.content.ContentUris
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.Log
 import com.ella.music.data.model.Album
 import com.ella.music.data.model.Song
-import com.kyant.taglib.TagLib
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -68,10 +66,7 @@ class MusicScanner(private val context: Context) {
                 val file = File(path)
                 if (!file.exists()) continue
 
-                val needsRetriever = isMissingTag(title, file.name) || isMissingTag(artist) ||
-                    isMissingTag(album) || duration <= 0
-
-                if (needsRetriever) {
+                if (isMissingTag(title, file.name) || isMissingTag(artist) || isMissingTag(album) || duration <= 0) {
                     try {
                         val retriever = MediaMetadataRetriever()
                         retriever.setDataSource(path)
@@ -81,7 +76,7 @@ class MusicScanner(private val context: Context) {
                         if (duration <= 0) duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
                         retriever.release()
                     } catch (e: Exception) {
-                        Log.w(TAG, "MediaMetadataRetriever failed for $path", e)
+                        Log.w(TAG, "Metadata extraction failed for $path", e)
                     }
                 }
 
@@ -122,23 +117,19 @@ class MusicScanner(private val context: Context) {
     }
 
     fun extractEmbeddedLyrics(path: String): String? {
-        try {
+        return try {
             val retriever = MediaMetadataRetriever()
             retriever.setDataSource(path)
             val lyrics = retriever.extractMetadata(1000)
             retriever.release()
             if (!lyrics.isNullOrBlank()) {
-                Log.d(TAG, "Found embedded lyrics via MediaMetadataRetriever (${lyrics.length} chars) for $path")
-                return lyrics
-            }
+                Log.d(TAG, "Found embedded lyrics (${lyrics.length} chars) for ${File(path).name}")
+                lyrics
+            } else null
         } catch (e: Exception) {
-            Log.w(TAG, "MediaMetadataRetriever lyrics failed for $path", e)
+            Log.w(TAG, "Lyrics extraction failed for $path", e)
+            null
         }
-        return null
-    }
-
-    fun extractReplayGain(path: String): Float? {
-        return null
     }
 
     fun extractCoverArt(path: String): ByteArray? {
